@@ -123,11 +123,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 For support, please open an issue in the repository or contact the development team. 
 
 ## 📝 Notes
-POST /esignature
-POST /esignature/{id}/send
-GET /esignature/{id}/status
-GET /esignature/{id}/download
-POST /esignature/{id}/cancel
-GET /esignature
-GET /esignature/{id}
-POST /esignature/{id}/resend
+- POST /esignature
+- POST /esignature/{id}/send
+- GET /esignature/{id}/status
+- GET /esignature/{id}/download
+- POST /esignature/{id}/cancel
+- GET /esignature
+- GET /esignature/{id}
+- POST /esignature/{id}/resend
