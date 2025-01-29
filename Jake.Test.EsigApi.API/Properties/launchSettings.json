@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "Jake.Test.EsigApi.API": {
+      "commandName": "Project",
+      "launchUrl": "swagger",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:61427;http://localhost:61428"
+    }
+  }
+}
