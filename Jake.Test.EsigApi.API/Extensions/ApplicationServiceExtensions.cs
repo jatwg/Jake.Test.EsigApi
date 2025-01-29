@@ -10,9 +10,6 @@ public static class ApplicationServiceExtensions
         services.AddEndpointsApiExplorer();
         services.AddSwaggerConfiguration(configuration);
 
-        // Add other application services here
-        // Example: services.AddScoped<IMyService, MyService>();
-
         return services;
     }
 

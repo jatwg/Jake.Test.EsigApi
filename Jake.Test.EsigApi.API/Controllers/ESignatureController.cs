@@ -1,8 +1,17 @@
 using Jake.Test.EsigApi.Application.DTOs;
-using Jake.Test.EsigApi.Domain.Entities;
-using Jake.Test.EsigApi.Application.Interfaces;
+using Jake.Test.EsigApi.Application.Features.ESignature.Commands.CreateESignatureRequest;
+using Jake.Test.EsigApi.Application.Features.ESignature.Commands.SendESignatureRequest;
+using Jake.Test.EsigApi.Application.Features.ESignature.Commands.ResendESignatureRequest;
+using Jake.Test.EsigApi.Application.Features.ESignature.Commands.CancelESignatureRequest;
+using Jake.Test.EsigApi.Application.Features.ESignature.Queries.GetAllESignatureRequests;
+using Jake.Test.EsigApi.Application.Features.ESignature.Queries.GetESignatureRequestById;
+using Jake.Test.EsigApi.Application.Features.ESignature.Queries.GetESignatureRequestStatus;
+using Jake.Test.EsigApi.Application.Features.ESignature.Queries.DownloadESignatureRequest;
 using Microsoft.AspNetCore.Mvc;
 using Jake.Test.EsigApi.Domain.Enums;
+using Jake.Test.EsigApi.Application.Exceptions;
+using Jake.Test.EsigApi.Application.Common.Results;
+using MediatR;
 
 namespace Jake.Test.EsigApi.API.Controllers;
 
@@ -11,18 +20,19 @@ namespace Jake.Test.EsigApi.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("[controller]")]
-public class ESignatureController : ControllerBase
+[Produces("application/json")]
+[ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+public class ESignatureController : BaseApiController<ESignatureController>
 {
-    private readonly IESignatureService _signatureService;
-    private readonly ILogger<ESignatureController> _logger;
+    private readonly IMediator _mediator;
 
     /// <summary>
     /// Initializes a new instance of the ESignatureController
     /// </summary>
-    public ESignatureController(IESignatureService signatureService, ILogger<ESignatureController> logger)
+    public ESignatureController(IMediator mediator, ILogger<ESignatureController> logger)
+        : base(logger)
     {
-        _signatureService = signatureService;
-        _logger = logger;
+        _mediator = mediator;
     }
 
     /// <summary>
@@ -33,12 +43,50 @@ public class ESignatureController : ControllerBase
     /// <response code="201">Returns the newly created e-signature request</response>
     /// <response code="400">If the request is invalid</response>
     [HttpPost]
-    [ProducesResponseType(StatusCodes.Status201Created)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult<ESignatureRequestDto>> Create([FromBody] CreateESignatureRequestDto request)
+    [ProducesResponseType(typeof(ESignatureRequestDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ESignatureRequestDto>> Create([FromBody] CreateESignatureRequestDto requestDto)
     {
-        var result = await _signatureService.CreateAsync(request);
-        return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
+        if (requestDto == null)
+        {
+            Logger.LogWarning("Create request was null");
+            return BadRequest("Request cannot be null");
+        }
+
+        try
+        {
+            Logger.LogInformation("Creating new e-signature request for document: {DocumentName}, Signer: {SignerEmail}", 
+                requestDto.DocumentName, requestDto.SignerEmail);
+            
+            var command = new CreateESignatureRequestCommand
+            {
+                DocumentName = requestDto.DocumentName,
+                DocumentContent = requestDto.DocumentContent,
+                SignerEmail = requestDto.SignerEmail,
+                SignerName = requestDto.SignerName,
+                Message = requestDto.Message
+            };
+            
+            var result = await _mediator.Send(command);
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to create e-signature request: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Successfully created e-signature request with ID: {RequestId}", result.Value.Id);
+            return CreatedAtAction(nameof(GetById), new { id = result.Value.Id }, result.Value);
+        }
+        catch (ValidationException ex)
+        {
+            Logger.LogWarning(ex, "Validation failed for e-signature request");
+            return BadRequest(new ValidationProblemDetails(ex.Errors));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error creating e-signature request for document: {DocumentName}", requestDto.DocumentName);
+            throw;
+        }
     }
 
     /// <summary>
@@ -47,11 +95,24 @@ public class ESignatureController : ControllerBase
     /// <returns>A list of all e-signature requests</returns>
     /// <response code="200">Returns the list of e-signature requests</response>
     [HttpGet]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(IEnumerable<ESignatureRequestDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IEnumerable<ESignatureRequestDto>>> GetAll()
     {
-        var signatures = await _signatureService.GetAllAsync();
-        return Ok(signatures);
+        try
+        {
+            Logger.LogInformation("Retrieving all e-signature requests");
+            
+            var query = new GetAllESignatureRequestsQuery();
+            var result = await _mediator.Send(query);
+            
+            Logger.LogInformation("Retrieved {Count} e-signature requests", result.Value.Count());
+            return Ok(result.Value);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error retrieving all e-signature requests");
+            throw;
+        }
     }
 
     /// <summary>
@@ -62,16 +123,31 @@ public class ESignatureController : ControllerBase
     /// <response code="200">Returns the requested e-signature request</response>
     /// <response code="404">If the e-signature request is not found</response>
     [HttpGet("{id}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ESignatureRequestDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ESignatureRequestDto>> GetById(Guid id)
     {
-        var signature = await _signatureService.GetByIdAsync(id);
-        if (signature == null)
+        try
         {
-            return NotFound();
+            Logger.LogInformation("Retrieving e-signature request with ID: {RequestId}", id);
+            
+            var query = new GetESignatureRequestByIdQuery(id);
+            var result = await _mediator.Send(query);
+            
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to retrieve e-signature request: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Successfully retrieved e-signature request with ID: {RequestId}", id);
+            return Ok(result.Value);
         }
-        return Ok(signature);
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error retrieving e-signature request with ID: {RequestId}", id);
+            throw;
+        }
     }
 
     /// <summary>
@@ -86,12 +162,27 @@ public class ESignatureController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Send(Guid id)
     {
-        var result = await _signatureService.SendAsync(id);
-        if (!result)
+        try
         {
-            return NotFound();
+            Logger.LogInformation("Sending e-signature request with ID: {RequestId}", id);
+            
+            var command = new SendESignatureRequestCommand(id);
+            var result = await _mediator.Send(command);
+            
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to send e-signature request: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Successfully sent e-signature request with ID: {RequestId}", id);
+            return Ok();
         }
-        return Ok();
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error sending e-signature request with ID: {RequestId}", id);
+            throw;
+        }
     }
 
     /// <summary>
@@ -106,12 +197,27 @@ public class ESignatureController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Resend(Guid id)
     {
-        var result = await _signatureService.ResendAsync(id);
-        if (!result)
+        try
         {
-            return NotFound();
+            Logger.LogInformation("Resending e-signature request with ID: {RequestId}", id);
+            
+            var command = new ResendESignatureRequestCommand(id);
+            var result = await _mediator.Send(command);
+            
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to resend e-signature request: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Successfully resent e-signature request with ID: {RequestId}", id);
+            return Ok();
         }
-        return Ok();
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error resending e-signature request with ID: {RequestId}", id);
+            throw;
+        }
     }
 
     /// <summary>
@@ -128,12 +234,24 @@ public class ESignatureController : ControllerBase
     {
         try
         {
-            var status = await _signatureService.GetStatusAsync(id);
-            return Ok(status);
+            Logger.LogInformation("Retrieving status for e-signature request with ID: {RequestId}", id);
+            
+            var query = new GetESignatureRequestStatusQuery(id);
+            var result = await _mediator.Send(query);
+            
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to retrieve status: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Status for e-signature request {RequestId} is: {Status}", id, result.Value);
+            return Ok(result.Value);
         }
-        catch (KeyNotFoundException)
+        catch (Exception ex)
         {
-            return NotFound();
+            Logger.LogError(ex, "Error retrieving status for e-signature request with ID: {RequestId}", id);
+            throw;
         }
     }
 
@@ -149,12 +267,27 @@ public class ESignatureController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Download(Guid id)
     {
-        var document = await _signatureService.DownloadAsync(id);
-        if (document == null)
+        try
         {
-            return NotFound();
+            Logger.LogInformation("Downloading signed document for e-signature request with ID: {RequestId}", id);
+            
+            var query = new DownloadESignatureRequestQuery(id);
+            var result = await _mediator.Send(query);
+            
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to download document: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Successfully downloaded signed document for e-signature request with ID: {RequestId}", id);
+            return File(result.Value, "application/pdf", $"document_{id}.pdf");
         }
-        return File(document, "application/pdf", $"document_{id}.pdf");
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error downloading document for e-signature request with ID: {RequestId}", id);
+            throw;
+        }
     }
 
     /// <summary>
@@ -169,11 +302,26 @@ public class ESignatureController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Cancel(Guid id)
     {
-        var result = await _signatureService.CancelAsync(id);
-        if (!result)
+        try
         {
-            return NotFound();
+            Logger.LogInformation("Cancelling e-signature request with ID: {RequestId}", id);
+            
+            var command = new CancelESignatureRequestCommand(id);
+            var result = await _mediator.Send(command);
+            
+            if (!result.IsSuccess)
+            {
+                Logger.LogWarning("Failed to cancel e-signature request: {Error}", result.Error);
+                return result.IsNotFound ? NotFound(result.Error) : BadRequest(result.Error);
+            }
+            
+            Logger.LogInformation("Successfully cancelled e-signature request with ID: {RequestId}", id);
+            return Ok();
         }
-        return Ok();
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error cancelling e-signature request with ID: {RequestId}", id);
+            throw;
+        }
     }
 } 
